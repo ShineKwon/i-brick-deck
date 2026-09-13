@@ -26,6 +26,12 @@ static constexpr int ROTATION = 1;
 static constexpr int PIN_KEY1 = 2;
 static constexpr int PIN_KEY2 = 3;
 
+// 보드의 BOOT 버튼. 스트래핑 핀이라 "리셋되는 순간" 눌려 있으면 다운로드 모드로 들어가지만,
+// 부팅이 끝난 뒤에는 평범한 입력이라 버튼으로 읽어도 된다. 업로드 중에만 누르지 않으면 된다.
+// 스위치를 안 달고도 바로 눌러 볼 수 있게 KEY1 에 붙여 둔다.
+static constexpr int PIN_BOOT = 9;
+static constexpr int BOOT_ALIAS = 0;   // 0 = KEY1 에 붙임, 1 = KEY2, -1 = 안 씀
+
 // ── 디스플레이 ──────────────────────────────────────────────────────────────
 class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_ST7789 _panel;
@@ -103,14 +109,21 @@ static constexpr uint16_t C_TEXT   = 0xE71C;
 static constexpr uint16_t C_DIM    = 0x8410;
 static constexpr uint16_t C_LIVE   = 0x0651;  // 청록 강조
 static constexpr uint16_t C_PRESS  = 0x04B2;
+// 키 배경 캐릭터. 라벨을 가리지 않게 눌리지 않았을 때는 차분한 회색으로 깔린다.
+static constexpr uint16_t C_ART       = 0x4208;
+static constexpr uint16_t C_ART_HI    = 0x738E;
+static constexpr uint16_t C_ART_ON    = 0x1470;
+static constexpr uint16_t C_ART_ON_HI = 0x3E57;
+static constexpr uint16_t C_BLUSH     = 0xBBCF;
 
 struct KeyDef {
   const char* label;
   const char* sub;
+  bool        art;    // 배경 캐릭터를 그릴지. 그리면 라벨이 아래로 내려간다
 };
 static const KeyDef KEYS[2] = {
-  { "COPY",  "Cmd+C" },
-  { "MUTE",  "F10"   },
+  { "COPY",  "Cmd+C", true  },
+  { "MUTE",  "F10",   false },
 };
 
 // ── 키 입력 (디바운스 + 짧게/길게) ──────────────────────────────────────────
@@ -119,6 +132,7 @@ static constexpr uint32_t LONGPRESS_MS  = 600;
 
 struct KeyState {
   uint8_t  pin;
+  int8_t   altPin    = -1;     // 같은 키를 누르는 두 번째 입력 (BOOT). -1 = 없음
   bool     raw       = false;  // true = 눌림 (풀업이라 LOW 가 눌림)
   bool     stable    = false;
   uint32_t tChange   = 0;
@@ -141,7 +155,32 @@ static void drawHeader() {
   lcd.drawString("2-key sample", SCR_W - PAD, HEADER_H / 2);
 }
 
-// 키 하나를 그린다. 나중에 label 대신 아이콘 비트맵을 넣는 자리가 여기다.
+// i-brick 마스코트. 제품 이름대로 머리 위에 브릭 스터드가 두 개 있다.
+// 비트맵이 아니라 도형으로 그려서 색만 바꾸면 눌림 상태를 같이 표현할 수 있다.
+static void drawMascot(int cx, int cy, bool pressed, uint16_t bg) {
+  const uint16_t body = pressed ? C_ART_ON    : C_ART;
+  const uint16_t hi   = pressed ? C_ART_ON_HI : C_ART_HI;
+
+  lcd.fillRoundRect(cx - 20, cy - 40,  15,  8, 3, body);   // 브릭 스터드
+  lcd.fillRoundRect(cx +  5, cy - 40,  15,  8, 3, body);
+  lcd.fillRoundRect(cx - 44, cy - 18,  10, 26, 5, body);   // 팔
+  lcd.fillRoundRect(cx + 34, cy - 18,  10, 26, 5, body);
+  lcd.fillRoundRect(cx - 32, cy - 33,  64, 54, 12, body);  // 머리·몸통
+  lcd.fillRoundRect(cx - 24, cy + 19,  18, 10, 5, body);   // 발
+  lcd.fillRoundRect(cx +  6, cy + 19,  18, 10, 5, body);
+
+  lcd.fillCircle(cx - 13, cy - 14, 8, hi);                 // 눈
+  lcd.fillCircle(cx + 13, cy - 14, 8, hi);
+  lcd.fillCircle(cx - 12, cy - 13, 4, bg);                 // 눈동자는 바탕색으로 뚫는다
+  lcd.fillCircle(cx + 14, cy - 13, 4, bg);
+  lcd.fillEllipse(cx - 25, cy + 1, 5, 3, C_BLUSH);         // 볼
+  lcd.fillEllipse(cx + 25, cy + 1, 5, 3, C_BLUSH);
+  lcd.fillEllipseArc(cx, cy + 1, 7, 10, 5, 8, 25, 155, hi); // 입
+
+  lcd.drawFastHLine(cx - 8, cy - 40, 16, body);            // 스터드 사이 연결
+}
+
+// 키 하나를 그린다. 나중에 도형 대신 아이콘 비트맵을 넣는 자리가 여기다.
 static void drawKey(int i, bool pressed) {
   const int x = KEY_X[i];
   const int y = KEY_Y;
@@ -152,19 +191,29 @@ static void drawKey(int i, bool pressed) {
   lcd.drawRoundRect(x, y, KEY_W, KEY_H, 10, edge);
   if (pressed) lcd.drawRoundRect(x + 1, y + 1, KEY_W - 2, KEY_H - 2, 9, edge);
 
+  int labelY = y + KEY_H / 2 - 14;
+  int subY   = y + KEY_H / 2 + 18;
+  if (KEYS[i].art) {
+    drawMascot(x + KEY_W / 2, y + 48, pressed, face);
+    labelY = y + KEY_H - 36;   // 캐릭터가 위를 쓰므로 라벨은 아래 띠로
+    subY   = y + KEY_H - 15;
+  }
+
   lcd.setTextDatum(middle_center);
   lcd.setFont(&fonts::Font4);
-  lcd.setTextColor(pressed ? C_LIVE : C_TEXT, face);
-  lcd.drawString(KEYS[i].label, x + KEY_W / 2, y + KEY_H / 2 - 14);
+  lcd.setTextColor(pressed ? C_LIVE : C_TEXT);   // 배경 투명 — 캐릭터를 지우지 않는다
+  lcd.drawString(KEYS[i].label, x + KEY_W / 2, labelY);
 
   lcd.setFont(&fonts::Font2);
-  lcd.setTextColor(C_DIM, face);
-  lcd.drawString(KEYS[i].sub, x + KEY_W / 2, y + KEY_H / 2 + 18);
+  lcd.setTextColor(C_DIM);
+  lcd.drawString(KEYS[i].sub, x + KEY_W / 2, subY);
 
   lcd.setTextDatum(top_left);
   lcd.setFont(&fonts::Font0);
-  lcd.setTextColor(C_DIM, face);
-  lcd.drawString(i == 0 ? "GPIO2" : "GPIO3", x + 8, y + 8);
+  lcd.setTextColor(C_DIM);
+  lcd.drawString(keys[i].altPin >= 0 ? (i == 0 ? "GPIO2 + BOOT" : "GPIO3 + BOOT")
+                                     : (i == 0 ? "GPIO2" : "GPIO3"),
+                 x + 8, y + 8);
 }
 
 // 오프셋 보정 패턴. 네 변의 흰 테두리와 네 모서리 사각형이 모두 온전히 보여야 한다.
@@ -208,7 +257,8 @@ static void pollKeys() {
   const uint32_t now = millis();
   for (int i = 0; i < 2; ++i) {
     KeyState& k = keys[i];
-    const bool raw = (digitalRead(k.pin) == LOW);
+    const bool raw = (digitalRead(k.pin) == LOW)
+                  || (k.altPin >= 0 && digitalRead(k.altPin) == LOW);
     if (raw != k.raw) { k.raw = raw; k.tChange = now; }
 
     if (raw != k.stable && (now - k.tChange) >= DEBOUNCE_MS) {
@@ -239,6 +289,10 @@ void setup() {
   pinMode(PIN_KEY2, INPUT_PULLUP);
   keys[0].pin = PIN_KEY1;
   keys[1].pin = PIN_KEY2;
+  if (BOOT_ALIAS >= 0) {
+    pinMode(PIN_BOOT, INPUT_PULLUP);
+    keys[BOOT_ALIAS].altPin = PIN_BOOT;
+  }
 
   lcd.init();
   lcd.setRotation(ROTATION);
@@ -249,6 +303,8 @@ void setup() {
   Serial.printf("LCD %dx%d  rotation=%d  offset(%d,%d)\n",
                 (int)lcd.width(), (int)lcd.height(), ROTATION, OFFSET_X, OFFSET_Y);
   Serial.printf("KEY1=GPIO%d  KEY2=GPIO%d  (INPUT_PULLUP, GND 에 닿으면 눌림)\n", PIN_KEY1, PIN_KEY2);
+  if (BOOT_ALIAS >= 0)
+    Serial.printf("BOOT(GPIO%d) -> KEY%d  (업로드 중에는 누르지 말 것)\n", PIN_BOOT, BOOT_ALIAS + 1);
   Serial.println("보정 패턴 4초 -> UI");
 
   drawCalibration();
