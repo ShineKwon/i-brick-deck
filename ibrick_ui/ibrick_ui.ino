@@ -2,7 +2,8 @@
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
-#include "bg_key.h"   // tools/make_girl.py + img2rgb565.py 로 생성한 148x128 RGB565
+#include "bg_key.h"    // COPY — 토끼 후드 소녀   (tools/make_char.py girl)
+#include "bg_key2.h"   // MUTE — 고양이 후드 "쉿" (tools/make_char.py cat)
 
 // ── 보드 핀맵 (Waveshare ESP32-C6-LCD-1.47) ─────────────────────────────────
 static constexpr int PIN_LCD_MOSI = 6;
@@ -112,13 +113,13 @@ static constexpr uint16_t C_LIVE   = 0x0651;  // 청록 강조
 static constexpr uint16_t C_PRESS  = 0x04B2;
 
 struct KeyDef {
-  const char* label;
-  const char* sub;
-  bool        art;    // 배경 캐릭터를 그릴지. 그리면 라벨이 아래로 내려간다
+  const char*     label;
+  const char*     sub;
+  const uint16_t* art;   // 배경 이미지. nullptr 이면 단색 면을 그린다
 };
 static const KeyDef KEYS[2] = {
-  { "COPY",  "Cmd+C", true  },
-  { "MUTE",  "F10",   false },
+  { "COPY",  "Cmd+C", BGKEY_DATA  },
+  { "MUTE",  "F10",   BGKEY2_DATA },
 };
 
 // ── 키 입력 (디바운스 + 짧게/길게) ──────────────────────────────────────────
@@ -161,7 +162,7 @@ static void drawKey(int i, bool pressed) {
   if (KEYS[i].art) {
     // 이미지는 키 크기와 같고 모서리가 배경색으로 미리 마스킹돼 있다.
     // rgb565_t 로 넘기면 바이트 순서를 추측할 필요가 없다.
-    lcd.pushImage(x, y, BGKEY_W, BGKEY_H, (const lgfx::rgb565_t*)BGKEY_DATA);
+    lcd.pushImage(x, y, BGKEY_W, BGKEY_H, (const lgfx::rgb565_t*)KEYS[i].art);
     labelY = y + KEY_H - 36;   // 그림이 위를 쓰므로 라벨은 아래 띠로
     subY   = y + KEY_H - 15;
   } else {
