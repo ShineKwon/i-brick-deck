@@ -2,6 +2,7 @@
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
+#include "bg_key.h"   // tools/make_girl.py + img2rgb565.py 로 생성한 148x128 RGB565
 
 // ── 보드 핀맵 (Waveshare ESP32-C6-LCD-1.47) ─────────────────────────────────
 static constexpr int PIN_LCD_MOSI = 6;
@@ -109,12 +110,6 @@ static constexpr uint16_t C_TEXT   = 0xE71C;
 static constexpr uint16_t C_DIM    = 0x8410;
 static constexpr uint16_t C_LIVE   = 0x0651;  // 청록 강조
 static constexpr uint16_t C_PRESS  = 0x04B2;
-// 키 배경 캐릭터. 라벨을 가리지 않게 눌리지 않았을 때는 차분한 회색으로 깔린다.
-static constexpr uint16_t C_ART       = 0x4208;
-static constexpr uint16_t C_ART_HI    = 0x738E;
-static constexpr uint16_t C_ART_ON    = 0x1470;
-static constexpr uint16_t C_ART_ON_HI = 0x3E57;
-static constexpr uint16_t C_BLUSH     = 0xBBCF;
 
 struct KeyDef {
   const char* label;
@@ -155,57 +150,35 @@ static void drawHeader() {
   lcd.drawString("2-key sample", SCR_W - PAD, HEADER_H / 2);
 }
 
-// i-brick 마스코트. 제품 이름대로 머리 위에 브릭 스터드가 두 개 있다.
-// 비트맵이 아니라 도형으로 그려서 색만 바꾸면 눌림 상태를 같이 표현할 수 있다.
-static void drawMascot(int cx, int cy, bool pressed, uint16_t bg) {
-  const uint16_t body = pressed ? C_ART_ON    : C_ART;
-  const uint16_t hi   = pressed ? C_ART_ON_HI : C_ART_HI;
-
-  lcd.fillRoundRect(cx - 20, cy - 40,  15,  8, 3, body);   // 브릭 스터드
-  lcd.fillRoundRect(cx +  5, cy - 40,  15,  8, 3, body);
-  lcd.fillRoundRect(cx - 44, cy - 18,  10, 26, 5, body);   // 팔
-  lcd.fillRoundRect(cx + 34, cy - 18,  10, 26, 5, body);
-  lcd.fillRoundRect(cx - 32, cy - 33,  64, 54, 12, body);  // 머리·몸통
-  lcd.fillRoundRect(cx - 24, cy + 19,  18, 10, 5, body);   // 발
-  lcd.fillRoundRect(cx +  6, cy + 19,  18, 10, 5, body);
-
-  lcd.fillCircle(cx - 13, cy - 14, 8, hi);                 // 눈
-  lcd.fillCircle(cx + 13, cy - 14, 8, hi);
-  lcd.fillCircle(cx - 12, cy - 13, 4, bg);                 // 눈동자는 바탕색으로 뚫는다
-  lcd.fillCircle(cx + 14, cy - 13, 4, bg);
-  lcd.fillEllipse(cx - 25, cy + 1, 5, 3, C_BLUSH);         // 볼
-  lcd.fillEllipse(cx + 25, cy + 1, 5, 3, C_BLUSH);
-  lcd.fillEllipseArc(cx, cy + 1, 7, 10, 5, 8, 25, 155, hi); // 입
-
-  lcd.drawFastHLine(cx - 8, cy - 40, 16, body);            // 스터드 사이 연결
-}
-
 // 키 하나를 그린다. 나중에 도형 대신 아이콘 비트맵을 넣는 자리가 여기다.
 static void drawKey(int i, bool pressed) {
   const int x = KEY_X[i];
   const int y = KEY_Y;
-  const uint16_t face = pressed ? C_PRESS : C_FACE;
-  const uint16_t edge = pressed ? C_LIVE  : C_EDGE;
+  const uint16_t edge = pressed ? C_LIVE : C_EDGE;
+  int labelY = y + KEY_H / 2 - 14;
+  int subY   = y + KEY_H / 2 + 18;
 
-  lcd.fillRoundRect(x, y, KEY_W, KEY_H, 10, face);
+  if (KEYS[i].art) {
+    // 이미지는 키 크기와 같고 모서리가 배경색으로 미리 마스킹돼 있다.
+    // rgb565_t 로 넘기면 바이트 순서를 추측할 필요가 없다.
+    lcd.pushImage(x, y, BGKEY_W, BGKEY_H, (const lgfx::rgb565_t*)BGKEY_DATA);
+    labelY = y + KEY_H - 36;   // 그림이 위를 쓰므로 라벨은 아래 띠로
+    subY   = y + KEY_H - 15;
+  } else {
+    lcd.fillRoundRect(x, y, KEY_W, KEY_H, 10, pressed ? C_PRESS : C_FACE);
+  }
+
+  // 테두리는 그림 위에 — 눌림 표시는 이 이중 테두리와 라벨 색이 맡는다
   lcd.drawRoundRect(x, y, KEY_W, KEY_H, 10, edge);
   if (pressed) lcd.drawRoundRect(x + 1, y + 1, KEY_W - 2, KEY_H - 2, 9, edge);
 
-  int labelY = y + KEY_H / 2 - 14;
-  int subY   = y + KEY_H / 2 + 18;
-  if (KEYS[i].art) {
-    drawMascot(x + KEY_W / 2, y + 48, pressed, face);
-    labelY = y + KEY_H - 36;   // 캐릭터가 위를 쓰므로 라벨은 아래 띠로
-    subY   = y + KEY_H - 15;
-  }
-
   lcd.setTextDatum(middle_center);
   lcd.setFont(&fonts::Font4);
-  lcd.setTextColor(pressed ? C_LIVE : C_TEXT);   // 배경 투명 — 캐릭터를 지우지 않는다
+  lcd.setTextColor(pressed ? C_LIVE : C_TEXT);   // 배경 투명 — 그림을 지우지 않는다
   lcd.drawString(KEYS[i].label, x + KEY_W / 2, labelY);
 
   lcd.setFont(&fonts::Font2);
-  lcd.setTextColor(C_DIM);
+  lcd.setTextColor(KEYS[i].art ? C_TEXT : C_DIM);
   lcd.drawString(KEYS[i].sub, x + KEY_W / 2, subY);
 
   lcd.setTextDatum(top_left);
