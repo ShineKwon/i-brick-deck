@@ -17,6 +17,10 @@ static constexpr int PIN_RGB_LED  = 8;   // WS2812
 static constexpr int OFFSET_X = 34;
 static constexpr int OFFSET_Y = 0;
 
+// 0/2 = 세로 172x320, 1/3 = 가로 320x172.
+// 위아래(또는 좌우)가 뒤집혀 보이면 1 <-> 3 을 바꾼다.
+static constexpr int ROTATION = 1;
+
 // 사용자 키 2개. GPIO2/3 은 스트래핑 핀이 아니고 LCD·SD·USB 와도 겹치지 않는다.
 // 스위치를 달기 전에는 점퍼선으로 GND 에 잠깐 대면 눌린 것으로 잡힌다.
 static constexpr int PIN_KEY1 = 2;
@@ -53,6 +57,11 @@ class LGFX : public lgfx::LGFX_Device {
       c.pin_busy = -1;
       c.panel_width  = 172;
       c.panel_height = 320;
+      // ST7789 의 프레임 메모리는 240x320 이고 172 폭 패널이 그 가운데에 물려 있다.
+      // LovyanGFX 는 회전 시 이 값으로 colstart/rowstart 를 다시 계산하므로
+      // (기본값 240x240 그대로 두면) 가로 회전에서 오프셋이 어긋난다.
+      c.memory_width  = 240;
+      c.memory_height = 320;
       c.offset_x = OFFSET_X;
       c.offset_y = OFFSET_Y;
       c.offset_rotation = 0;
@@ -78,12 +87,14 @@ class LGFX : public lgfx::LGFX_Device {
 
 static LGFX lcd;
 
-// ── 레이아웃 (172 x 320 세로) ───────────────────────────────────────────────
-static constexpr int SCR_W = 172, SCR_H = 320;
-static constexpr int PAD = 8, HEADER_H = 44;
-static constexpr int KEY_X = PAD, KEY_W = SCR_W - PAD * 2;   // 156
-static constexpr int KEY_H = 126;
-static constexpr int KEY_Y[2] = { HEADER_H + PAD, HEADER_H + PAD * 2 + KEY_H };
+// ── 레이아웃 (320 x 172 가로) ───────────────────────────────────────────────
+// 세로 172 안에서 헤더를 44px 로 잡으면 화면의 26% 를 먹으므로 28px 로 줄였다.
+static constexpr int SCR_W = 320, SCR_H = 172;
+static constexpr int PAD = 8, HEADER_H = 28;
+static constexpr int KEY_W = (SCR_W - PAD * 3) / 2;           // 148
+static constexpr int KEY_H = SCR_H - HEADER_H - PAD * 2;      // 128
+static constexpr int KEY_Y = HEADER_H + PAD;                  // 36
+static constexpr int KEY_X[2] = { PAD, PAD * 2 + KEY_W };     // 8, 164
 
 static constexpr uint16_t C_BG     = 0x18E3;  // 짙은 회색
 static constexpr uint16_t C_FACE   = 0x2986;
@@ -120,38 +131,40 @@ static KeyState keys[2];
 static void drawHeader() {
   lcd.fillRect(0, 0, SCR_W, HEADER_H, C_BG);
   lcd.drawFastHLine(0, HEADER_H - 1, SCR_W, C_EDGE);
+  lcd.setFont(&fonts::Font2);
   lcd.setTextDatum(middle_left);
   lcd.setTextColor(C_LIVE, C_BG);
-  lcd.setFont(&fonts::Font2);
-  lcd.drawString("i-brick deck", PAD, HEADER_H / 2 - 7);
-  lcd.setTextColor(C_DIM, C_BG);
+  lcd.drawString("i-brick deck", PAD, HEADER_H / 2);
   lcd.setFont(&fonts::Font0);
-  lcd.drawString("2-key sample", PAD, HEADER_H / 2 + 10);
+  lcd.setTextDatum(middle_right);
+  lcd.setTextColor(C_DIM, C_BG);
+  lcd.drawString("2-key sample", SCR_W - PAD, HEADER_H / 2);
 }
 
 // 키 하나를 그린다. 나중에 label 대신 아이콘 비트맵을 넣는 자리가 여기다.
 static void drawKey(int i, bool pressed) {
-  const int y = KEY_Y[i];
+  const int x = KEY_X[i];
+  const int y = KEY_Y;
   const uint16_t face = pressed ? C_PRESS : C_FACE;
   const uint16_t edge = pressed ? C_LIVE  : C_EDGE;
 
-  lcd.fillRoundRect(KEY_X, y, KEY_W, KEY_H, 10, face);
-  lcd.drawRoundRect(KEY_X, y, KEY_W, KEY_H, 10, edge);
-  if (pressed) lcd.drawRoundRect(KEY_X + 1, y + 1, KEY_W - 2, KEY_H - 2, 9, edge);
+  lcd.fillRoundRect(x, y, KEY_W, KEY_H, 10, face);
+  lcd.drawRoundRect(x, y, KEY_W, KEY_H, 10, edge);
+  if (pressed) lcd.drawRoundRect(x + 1, y + 1, KEY_W - 2, KEY_H - 2, 9, edge);
 
   lcd.setTextDatum(middle_center);
   lcd.setFont(&fonts::Font4);
   lcd.setTextColor(pressed ? C_LIVE : C_TEXT, face);
-  lcd.drawString(KEYS[i].label, KEY_X + KEY_W / 2, y + KEY_H / 2 - 12);
+  lcd.drawString(KEYS[i].label, x + KEY_W / 2, y + KEY_H / 2 - 14);
 
   lcd.setFont(&fonts::Font2);
   lcd.setTextColor(C_DIM, face);
-  lcd.drawString(KEYS[i].sub, KEY_X + KEY_W / 2, y + KEY_H / 2 + 20);
+  lcd.drawString(KEYS[i].sub, x + KEY_W / 2, y + KEY_H / 2 + 18);
 
   lcd.setTextDatum(top_left);
   lcd.setFont(&fonts::Font0);
   lcd.setTextColor(C_DIM, face);
-  lcd.drawString(i == 0 ? "GPIO2" : "GPIO3", KEY_X + 8, y + 8);
+  lcd.drawString(i == 0 ? "GPIO2" : "GPIO3", x + 8, y + 8);
 }
 
 // 오프셋 보정 패턴. 네 변의 흰 테두리와 네 모서리 사각형이 모두 온전히 보여야 한다.
@@ -172,7 +185,7 @@ static void drawCalibration() {
   char buf[32];
   snprintf(buf, sizeof(buf), "%dx%d", (int)lcd.width(), (int)lcd.height());
   lcd.drawString(buf, SCR_W / 2, SCR_H / 2);
-  snprintf(buf, sizeof(buf), "off %d,%d", OFFSET_X, OFFSET_Y);
+  snprintf(buf, sizeof(buf), "rot %d  off %d,%d", ROTATION, OFFSET_X, OFFSET_Y);
   lcd.drawString(buf, SCR_W / 2, SCR_H / 2 + 22);
 }
 
@@ -228,12 +241,13 @@ void setup() {
   keys[1].pin = PIN_KEY2;
 
   lcd.init();
-  lcd.setRotation(0);
+  lcd.setRotation(ROTATION);
   lcd.setBrightness(200);   // 백라이트를 명시적으로 켠다
 
   Serial.println();
   Serial.println("=== i-brick deck / 2-key sample ===");
-  Serial.printf("LCD %dx%d  offset(%d,%d)\n", (int)lcd.width(), (int)lcd.height(), OFFSET_X, OFFSET_Y);
+  Serial.printf("LCD %dx%d  rotation=%d  offset(%d,%d)\n",
+                (int)lcd.width(), (int)lcd.height(), ROTATION, OFFSET_X, OFFSET_Y);
   Serial.printf("KEY1=GPIO%d  KEY2=GPIO%d  (INPUT_PULLUP, GND 에 닿으면 눌림)\n", PIN_KEY1, PIN_KEY2);
   Serial.println("보정 패턴 4초 -> UI");
 

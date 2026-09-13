@@ -75,3 +75,46 @@ LovyanGFX 는 1.2.x 부터 이 매크로를 쓴다.
 **빌드 결과** — 플래시 291,052B / 1,310,720B (22%), 전역 RAM 14,296B (4%).
 172x320 풀스크린 스프라이트는 110KB 라 여유는 있지만, 지금은 키 상태가 바뀔 때만
 해당 키 사각형만 다시 그리는 방식이라 스프라이트를 안 쓴다.
+
+## 가로 전환에서 나온 것 (2026-09-13)
+
+### 1. `memory_width` / `memory_height` 를 반드시 지정해야 한다
+
+`Panel_Device.hpp` 기본값이 **240 x 240** 인데 ST7789 프레임 메모리는 **240 x 320** 이다.
+`Panel_LCD::setRotation` 이 회전할 때 이 값으로 `colstart`/`rowstart` 를 다시 계산한다.
+
+```
+_colstart = (rot & 2) ? mw - (pw + ox) : ox;
+_rowstart = ((1 << rot) & 0b10010110) ? mh - (ph + oy) : oy;
+```
+
+회전 0 은 두 분기 모두 `ox`/`oy` 를 그대로 쓰므로 **기본값이 틀려도 드러나지 않는다.**
+회전 2·3 에서 `mh - (ph + oy)` 가 `240 - 320 = -80` 이 되어 깨진다.
+`memory_width = 240, memory_height = 320` 을 명시해 네 방향 모두 맞췄다.
+
+### 2. 플래시는 4MB 가 아니라 8MB
+
+`esptool flash_id` → `Device: 4017`, `Detected flash size: 8MB`.
+`FlashSize=8M,PartitionScheme=default_8MB` 로 바꾸니 앱 파티션이 1.28MB → 3.19MB 가 됐다
+(스케치 291KB 가 22% → 8%). 나중에 아이콘 비트맵을 넣을 공간이 여기서 나온다.
+
+### 3. 업로드가 깨지는 진짜 이유 — 스텁과 보드레이트
+
+두 번 연속 실패했고 메시지가 단계적으로 바뀌었다.
+
+```
+Changing baud rate to 921600  ->  A fatal error occurred: No serial data received.
+Stub running...              ->  Unable to verify flash chip connection (No serial data received.)
+```
+
+C6 의 네이티브 USB Serial/JTAG 에서는 (a) 보드레이트 변경이 의미가 없고 연결을 끊으며,
+(b) 스텁 로더를 올리면 통신이 죽는다. **`--no-stub` 이 핵심이고, arduino-cli upload 는
+이 옵션을 못 넘긴다.** 그래서 `make flash` 는 esptool 을 직접 부른다.
+
+첫 업로드가 921600 + 스텁으로 성공한 건 운이었다. 재현되지 않는다.
+
+### 4. merged.bin 대신 네 조각으로
+
+`merged.bin` 은 8MB 전체를 패딩해서 쓰기 때문에 40.7 초가 걸렸다.
+bootloader(0x0) / partitions(0x8000) / boot_app0(0xe000) / app(0x10000) 네 개만 올리면
+312KB, **약 10초**다.
