@@ -9,7 +9,9 @@ FQBN := esp32:esp32:esp32c6:CDCOnBoot=cdc,FlashSize=8M,PartitionScheme=default_8
 # "Unable to verify flash chip connection" 으로 실패한다.
 ESPTOOL := $(HOME)/Library/Arduino15/packages/esp32/tools/esptool_py/4.6/esptool
 BUILD   := build
-PORT ?= /dev/cu.usbmodem214201
+# C6 의 네이티브 USB 포트는 다시 꽂을 때마다 이름이 바뀐다. 고정하지 말고 찾는다.
+# 다른 보드를 쓰려면 make PORT=/dev/cu.xxx 로 덮어쓴다.
+PORT ?= $(shell "$(CLI)" board list 2>/dev/null | awk '/ESP32 Family Device/{print $$1; exit}')
 SKETCH := ibrick_ui
 
 .PHONY: all build flash monitor ports clean
@@ -23,6 +25,7 @@ build:
 BOOT_APP0 := $(HOME)/Library/Arduino15/packages/esp32/hardware/esp32/3.0.2/tools/partitions/boot_app0.bin
 
 flash:
+	@test -n "$(PORT)" || { echo "ESP32 보드를 못 찾았다. 연결을 확인하거나 make PORT=... 로 지정할 것."; exit 1; }
 	"$(ESPTOOL)" --chip esp32c6 --port $(PORT) --no-stub --baud 115200 write_flash \
 		0x0     $(BUILD)/$(SKETCH).ino.bootloader.bin \
 		0x8000  $(BUILD)/$(SKETCH).ino.partitions.bin \

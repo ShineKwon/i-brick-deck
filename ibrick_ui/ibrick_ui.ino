@@ -2,7 +2,12 @@
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
-#include "bg_key.h"    // COPY — 토끼 후드 소녀   (tools/make_char.py girl)
+#include <BLEDevice.h>
+#include <BLEHIDDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include "bg_key.h"    // BACK — 토끼 후드 소녀   (tools/make_char.py girl)
 #include "bg_key2.h"   // MUTE — 고양이 후드 "쉿" (tools/make_char.py cat)
 
 // ── 보드 핀맵 (Waveshare ESP32-C6-LCD-1.47) ─────────────────────────────────
@@ -33,6 +38,10 @@ static constexpr int PIN_KEY2 = 3;
 // 스위치를 안 달고도 바로 눌러 볼 수 있게 KEY1 에 붙여 둔다.
 static constexpr int PIN_BOOT = 9;
 static constexpr int BOOT_ALIAS = 0;   // 0 = KEY1 에 붙임, 1 = KEY2, -1 = 안 씀
+
+// 부팅하자마자 색·해상도 테스트 4장을 보려면 true 로 바꿔 다시 빌드한다.
+// 평소에는 바로 UI 로 들어가야 스트림덱으로 쓸 수 있어서 기본이 false 다.
+static constexpr bool START_IN_TEST = false;
 
 // ── 디스플레이 ──────────────────────────────────────────────────────────────
 class LGFX : public lgfx::LGFX_Device {
@@ -112,15 +121,117 @@ static constexpr uint16_t C_DIM    = 0x8410;
 static constexpr uint16_t C_LIVE   = 0x0651;  // 청록 강조
 static constexpr uint16_t C_PRESS  = 0x04B2;
 
+// HID 는 문자가 아니라 usage code 를 보내고 해석은 호스트가 한다.
+// 그래서 "크롬 뒤로가기"가 macOS 는 Cmd+<-, Windows 는 Alt+<- 로 갈린다.
+// 반면 음소거는 Consumer Control usage 0xE2 라 두 OS 가 똑같다 —
+// 프로필이 필요한 키와 아닌 키가 여기서 갈린다.
+enum HostOS : uint8_t { HOST_MAC = 0, HOST_WIN = 1 };
+static HostOS hostOS = HOST_MAC;
+
+static constexpr uint8_t MOD_LCTRL = 0x01, MOD_LALT = 0x04, MOD_LGUI = 0x08;
+static constexpr uint8_t KEY_LEFT  = 0x50;
+static constexpr uint16_t CC_MUTE  = 0x00E2;
+
 struct KeyDef {
   const char*     label;
-  const char*     sub;
-  const uint16_t* art;   // 배경 이미지. nullptr 이면 단색 면을 그린다
+  const char*     subMac;   // 호스트 프로필에 따라 다르게 보여 준다
+  const char*     subWin;
+  const uint16_t* art;      // 배경 이미지. nullptr 이면 단색 면을 그린다
 };
 static const KeyDef KEYS[2] = {
-  { "COPY",  "Cmd+C", BGKEY_DATA  },
-  { "MUTE",  "F10",   BGKEY2_DATA },
+  { "BACK",  "Cmd+<-", "Alt+<-", BGKEY_DATA  },
+  { "MUTE",  "Mute",   "Mute",   BGKEY2_DATA },
 };
+static const char* subOf(int i) {
+  return hostOS == HOST_MAC ? KEYS[i].subMac : KEYS[i].subWin;
+}
+
+// ── BLE HID ─────────────────────────────────────────────────────────────────
+// 리포트 두 개를 쓴다. 1번은 일반 키보드, 2번은 Consumer Control(미디어 키).
+// 음소거 같은 미디어 키는 키보드 리포트로는 못 보낸다.
+static const uint8_t REPORT_MAP[] = {
+  0x05, 0x01,        // Usage Page (Generic Desktop)
+  0x09, 0x06,        //   Usage (Keyboard)
+  0xA1, 0x01,        //   Collection (Application)
+  0x85, 0x01,        //     Report ID (1)
+  0x05, 0x07,        //     Usage Page (Keyboard)
+  0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+  0x75, 0x01, 0x95, 0x08, 0x81, 0x02,          // 모디파이어 8bit
+  0x95, 0x01, 0x75, 0x08, 0x81, 0x03,          // 예약 1byte
+  0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65,
+  0x05, 0x07, 0x19, 0x00, 0x29, 0x65, 0x81, 0x00,  // 키코드 6byte
+  0xC0,
+  0x05, 0x0C,        // Usage Page (Consumer)
+  0x09, 0x01,        //   Usage (Consumer Control)
+  0xA1, 0x01,        //   Collection (Application)
+  0x85, 0x02,        //     Report ID (2)
+  0x15, 0x00, 0x26, 0xFF, 0x03,                // Logical 0 ~ 0x3FF
+  0x19, 0x00, 0x2A, 0xFF, 0x03,                // Usage 0 ~ 0x3FF
+  0x75, 0x10, 0x95, 0x01, 0x81, 0x00,          // 16bit usage 1개
+  0xC0
+};
+
+static BLEHIDDevice*     hid    = nullptr;
+static BLECharacteristic* kbIn  = nullptr;   // 리포트 1 — 키보드
+static BLECharacteristic* ccIn  = nullptr;   // 리포트 2 — 미디어
+static volatile bool bleConnected = false;
+static volatile bool uiDirty      = false;   // 콜백에서 그리지 않고 loop 에서 다시 그린다
+
+class SrvCB : public BLEServerCallbacks {
+  void onConnect(BLEServer*) override {
+    bleConnected = true;  uiDirty = true;
+  }
+  void onDisconnect(BLEServer* srv) override {
+    bleConnected = false; uiDirty = true;
+    srv->startAdvertising();                 // 끊기면 다시 광고
+  }
+};
+
+static void bleBegin() {
+  BLEDevice::init("i-brick deck");
+  BLEServer* srv = BLEDevice::createServer();
+  srv->setCallbacks(new SrvCB());
+
+  hid  = new BLEHIDDevice(srv);
+  kbIn = hid->inputReport(1);
+  ccIn = hid->inputReport(2);
+  hid->manufacturer()->setValue("i-brick");
+  hid->pnp(0x02, 0xE502, 0xA111, 0x0210);
+  hid->hidInfo(0x00, 0x01);
+  hid->reportMap((uint8_t*)REPORT_MAP, sizeof(REPORT_MAP));
+  hid->startServices();
+  hid->setBatteryLevel(100);
+
+  // HID over GATT 는 암호화를 요구한다. 입력 수단이 없으니 Just Works 본딩.
+  BLESecurity* sec = new BLESecurity();
+  sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+  sec->setCapability(ESP_IO_CAP_NONE);
+  sec->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+
+  BLEAdvertising* adv = srv->getAdvertising();
+  adv->setAppearance(HID_KEYBOARD);
+  adv->addServiceUUID(hid->hidService()->getUUID());
+  adv->start();
+}
+
+// 아래 두 함수는 delay 를 쓰므로 loop 문맥에서만 부른다. BLE 콜백에서 부르면 안 된다.
+static void sendKey(uint8_t mod, uint8_t key) {
+  if (!bleConnected) { Serial.println("  (BLE 미연결 — 전송 안 함)"); return; }
+  uint8_t down[8] = { mod, 0, key, 0, 0, 0, 0, 0 };
+  uint8_t up[8]   = { 0 };
+  kbIn->setValue(down, 8); kbIn->notify();
+  delay(12);
+  kbIn->setValue(up, 8);   kbIn->notify();
+}
+
+static void sendConsumer(uint16_t usage) {
+  if (!bleConnected) { Serial.println("  (BLE 미연결 — 전송 안 함)"); return; }
+  uint8_t down[2] = { (uint8_t)(usage & 0xFF), (uint8_t)(usage >> 8) };
+  uint8_t up[2]   = { 0, 0 };
+  ccIn->setValue(down, 2); ccIn->notify();
+  delay(12);
+  ccIn->setValue(up, 2);   ccIn->notify();
+}
 
 // ── 키 입력 (디바운스 + 짧게/길게) ──────────────────────────────────────────
 static constexpr uint32_t DEBOUNCE_MS   = 25;
@@ -148,7 +259,10 @@ static void drawHeader() {
   lcd.setFont(&fonts::Font0);
   lcd.setTextDatum(middle_right);
   lcd.setTextColor(C_DIM, C_BG);
-  lcd.drawString("2-key sample", SCR_W - PAD, HEADER_H / 2);
+  lcd.drawString(hostOS == HOST_MAC ? "MAC" : "WIN", SCR_W - PAD, HEADER_H / 2);
+  lcd.drawString("BLE", SCR_W - PAD - 30, HEADER_H / 2);
+  lcd.fillCircle(SCR_W - PAD - 38, HEADER_H / 2, 3,
+                 bleConnected ? C_LIVE : C_DIM);
 }
 
 // 키 하나를 그린다. 나중에 도형 대신 아이콘 비트맵을 넣는 자리가 여기다.
@@ -180,7 +294,7 @@ static void drawKey(int i, bool pressed) {
 
   lcd.setFont(&fonts::Font2);
   lcd.setTextColor(KEYS[i].art ? C_TEXT : C_DIM);
-  lcd.drawString(KEYS[i].sub, x + KEY_W / 2, subY);
+  lcd.drawString(subOf(i), x + KEY_W / 2, subY);
 
   lcd.setTextDatum(top_left);
   lcd.setFont(&fonts::Font0);
@@ -313,8 +427,26 @@ static void drawUI() {
 // ── 이벤트 처리 ─────────────────────────────────────────────────────────────
 static void onPress(int i)     { Serial.printf("[KEY%d] press\n", i + 1);
                                  neopixelWrite(PIN_RGB_LED, i == 0 ? 0 : 12, i == 0 ? 12 : 0, 12); }
-static void onShort(int i)     { Serial.printf("[KEY%d] short  -> %s (%s)\n", i + 1, KEYS[i].label, KEYS[i].sub); }
-static void onLong(int i)      { Serial.printf("[KEY%d] LONG   -> 레이어 전환 자리\n", i + 1); }
+static void onShort(int i) {
+  Serial.printf("[KEY%d] short  -> %s (%s)\n", i + 1, KEYS[i].label, subOf(i));
+  if (i == 0) {
+    // 크롬 뒤로가기 — 여기가 호스트에 따라 갈리는 지점이다
+    sendKey(hostOS == HOST_MAC ? MOD_LGUI : MOD_LALT, KEY_LEFT);
+  } else {
+    sendConsumer(CC_MUTE);   // 미디어 키는 두 OS 가 동일하다
+  }
+}
+
+static void onLong(int i) {
+  if (i == 1) {
+    hostOS = (hostOS == HOST_MAC) ? HOST_WIN : HOST_MAC;
+    Serial.printf("[KEY2] LONG   -> 호스트 프로필 %s\n",
+                  hostOS == HOST_MAC ? "macOS (Cmd+<-)" : "Windows (Alt+<-)");
+    drawUI();
+  } else {
+    Serial.println("[KEY1] LONG   -> (예약)");
+  }
+}
 static void onRelease(int i)   { Serial.printf("[KEY%d] release\n", i + 1);
                                  neopixelWrite(PIN_RGB_LED, 0, 0, 0); }
 
@@ -382,14 +514,28 @@ void setup() {
   Serial.printf("KEY1=GPIO%d  KEY2=GPIO%d  (INPUT_PULLUP, GND 에 닿으면 눌림)\n", PIN_KEY1, PIN_KEY2);
   if (BOOT_ALIAS >= 0)
     Serial.printf("BOOT(GPIO%d) -> KEY%d  (업로드 중에는 누르지 말 것)\n", PIN_BOOT, BOOT_ALIAS + 1);
-  Serial.println("색·해상도 테스트 4장. 키를 누를 때마다 넘어가고 마지막에 UI 로 간다.");
+  bleBegin();
+  Serial.println("BLE 광고 시작 — 호스트의 블루투스 목록에서 \"i-brick deck\" 로 페어링.");
+  Serial.printf("호스트 프로필 %s. KEY2 를 길게 누르면 macOS <-> Windows 전환.\n",
+                hostOS == HOST_MAC ? "macOS" : "Windows");
+  Serial.println("색·해상도 테스트를 보려면 START_IN_TEST 를 true 로 바꿔 다시 빌드한다.");
   Serial.println();
 
   neopixelWrite(PIN_RGB_LED, 0, 0, 0);
-  drawTestPage(0);
+  if (START_IN_TEST) {
+    drawTestPage(0);
+  } else {
+    testMode = false;
+    drawUI();
+  }
 }
 
 void loop() {
+  if (uiDirty) {                 // BLE 콜백에서 그리면 SPI 가 깨진다. 여기서 다시 그린다.
+    uiDirty = false;
+    if (!testMode) drawHeader();
+    Serial.println(bleConnected ? "[BLE] 연결됨" : "[BLE] 끊김 — 다시 광고");
+  }
   pollKeys();
   delay(2);
 }
