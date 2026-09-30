@@ -335,3 +335,34 @@ lcd.drawString("v" FW_VERSION, ...);   // 배열은 리터럴 연결이 안 된�
 ```
 `#define FW_VERSION "0.1"` 로 바꿔 해결. **v0.1 태그가 컴파일 안 되는 코드에 붙어 있었다** —
 빌드 검증 없이 태그를 달면 이렇게 된다.
+
+### ctags 는 결국 이렇게 풀었다 (2026-09-30)
+
+`exit 0` 스텁은 임시방편이었고, 제대로 된 해결을 찾는 과정에서 세 번 틀렸다.
+
+| 시도 | 결과 |
+|---|---|
+| universal-ctags 6.2.1 | 실행은 되는데 필드 형식이 달라 **반환형이 빈 채로** 나옴 (`static  subOf(int i);`) |
+| brew arduino-cli 1.5.1 | 1.x 도 **여전히 ctags 를 쓴다.** "1.x 는 안 쓴다"는 내 가정이 틀렸음 |
+| brew ctags (Exuberant 5.8) | 네이티브지만 `T`(typeref) 필드가 없다 — 그건 **Arduino 패치판(5.8-arduino11)에만** 있는 확장 |
+
+**해결 — 코드를 `.ino` 에서 `.cpp` 로 옮겼다.**
+arduino-cli 는 `.ino` 에만 프로토타입을 삽입하므로 `.cpp` 는 이 경로를 아예 안 탄다.
+`ibrick_ui.ino` 는 폴더명을 맞추기 위한 빈 파일로 남긴다.
+`.cpp` 는 `Arduino.h` 를 직접 포함해야 한다. 빌드 크기는 1,269,844B 로 **이전과 동일** —
+기능 변화 없이 의존성만 빠졌다는 확인이다.
+
+### 전역 Arduino 설치에 남긴 것
+| 경로 | 상태 |
+|---|---|
+| `esptool_py/4.6/esptool` | venv 의 네이티브 esptool 4.6 으로 넘기는 래퍼. 원본 `esptool.x86_64.bak` |
+| `builtin/tools/ctags/5.8-arduino11/ctags` | brew Exuberant 5.8(arm64) 로 넘기는 래퍼. 원본 `ctags.x86_64.bak` |
+
+ctags 래퍼는 **실행만 되게 하는 용도**다. 우리 코드는 `.cpp` 라 출력에 의존하지 않지만,
+arduino-cli 가 빈 `.ino` 에도 ctags 를 실행하므로 래퍼 자체는 있어야 한다.
+다른 `.ino` 기반 스케치는 여전히 프로토타입이 깨진다 — 그건 esp32 코어나 Arduino IDE 를
+arm64 도구가 들어간 버전으로 올려야 풀린다.
+
+### Makefile 이 brew arduino-cli 를 쓴다
+IDE 번들 0.35 대신 `arduino-cli` 1.5.1(네이티브)을 부른다. 같은 `~/Library/Arduino15` 를
+보므로 코어 3.0.2 와 LovyanGFX 1.1.16 고정은 그대로다.

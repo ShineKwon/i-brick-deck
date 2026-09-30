@@ -1,6 +1,9 @@
 # ESP32-C6-LCD-1.47 샘플의 빌드·업로드·시리얼 모니터를 묶은 개발용 Makefile
 
-CLI  := /Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli
+# Arduino IDE 번들 CLI(0.35) 대신 brew 의 네이티브 arduino-cli 를 쓴다.
+# 0.35 는 프로토타입 생성에 x86 전용 ctags 를 쓰는데 macOS 26+ 에는 Rosetta 가 없다.
+# 1.x 는 ctags 를 아예 쓰지 않아 이 문제가 사라진다. 코어·라이브러리는 같은 곳을 본다.
+CLI  := arduino-cli
 # 플래시는 실측 8MB (esptool flash_id: Device 4017). 4M 으로 잡으면 절반을 못 쓴다.
 FQBN := esp32:esp32:esp32c6:CDCOnBoot=cdc,FlashSize=8M,PartitionScheme=default_8MB
 
