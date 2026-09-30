@@ -290,3 +290,48 @@ UI 여야 하는데, 테스트가 켜져 있으면 키를 네 번 눌러야 도�
 ### 포트 자동 탐지
 C6 네이티브 USB 포트는 다시 꽂으면 이름이 바뀐다 (`usbmodem214201` -> `usbmodem1442101`).
 Makefile 이 `arduino-cli board list` 에서 "ESP32 Family Device" 를 찾도록 바꿨다.
+
+## macOS 27 업데이트로 툴체인이 깨진 건 (2026-09-30)
+
+macOS 26.x -> **27.0.1 (arm64)** 업데이트 후 빌드가 멈췄다. 원인이 셋이었다.
+
+### 1. Rosetta 제거 — x86_64 바이너리가 전부 죽음
+```
+esptool: Mach-O 64-bit executable x86_64   -> Bad CPU type in executable
+riscv32-esp-elf-g++: ... arm64              -> 컴파일러는 멀쩡
+```
+컴파일러는 네이티브라 C++ 컴파일은 되고, **보조 도구만** 죽는다.
+Arduino15 안에서 x86 전용인 것 — `esptool`, `ctags`, `mkspiffs`, `mklittlefs`,
+`dfu-util`, AVR 툴체인 전부. 이 중 **ESP32-C6 빌드 경로에 필요한 건 esptool 과 ctags 둘뿐**이다.
+
+**esptool** — venv 에 같은 버전을 네이티브로 깔고 래퍼로 교체했다.
+```
+python3 -m venv ~/.local/esptool-venv
+~/.local/esptool-venv/bin/pip install esptool==4.6
+```
+`.../esptool_py/4.6/esptool` 를 아래 스크립트로 바꿨다. 원본은 `esptool.x86_64.bak`.
+```sh
+exec "$HOME/.local/esptool-venv/bin/python" -m esptool "$@"
+```
+버전을 4.6 으로 맞춘 건 esptool 5.x 가 커맨드 이름을 바꿔서 코어 레시피와 안 맞기 때문이다.
+
+**ctags** — universal-ctags 를 깔려 했으나 brew 자체가 Xcode 라이선스에 막혀 실패.
+`exit 0` 만 하는 스텁으로 교체했다. 원본은 `ctags.x86_64.bak`.
+
+> **스텁의 대가** — arduino-cli 가 `.ino` 에서 함수 프로토타입을 자동 생성하지 못한다.
+> 지금 스케치는 모든 함수가 **사용 전에 정의**돼 있어서 문제가 없지만,
+> 나중에 정의보다 앞에서 부르는 함수를 추가하면 "not declared in this scope" 가 난다.
+> 그때는 직접 프로토타입을 적거나 universal-ctags 를 깔아 래핑할 것.
+
+### 2. Xcode 라이선스 재동의 필요 — `make` 와 `brew` 가 막힘
+`sudo xcodebuild -license accept` 가 필요하고 비밀번호가 있어야 해서 자동화 불가.
+그동안은 `arduino-cli` 를 직접 불러 우회했다.
+
+### 3. 덤으로 잡힌 실제 버그
+ctags 스텁으로 전처리가 뚫리자 **내 코드의 컴파일 에러**가 드러났다.
+```
+static constexpr char FW_VERSION[] = "0.1";
+lcd.drawString("v" FW_VERSION, ...);   // 배열은 리터럴 연결이 안 된다
+```
+`#define FW_VERSION "0.1"` 로 바꿔 해결. **v0.1 태그가 컴파일 안 되는 코드에 붙어 있었다** —
+빌드 검증 없이 태그를 달면 이렇게 된다.

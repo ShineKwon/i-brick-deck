@@ -1,6 +1,7 @@
 // ESP32-C6-LCD-1.47 에 2키 스트림덱 UI 를 그리고 물리 키 입력을 처리하는 샘플 스케치
 
-static constexpr char FW_VERSION[] = "0.1";   // VERSION 파일과 같이 올린다
+// 문자열 리터럴 연결("v" FW_VERSION)에 쓰므로 배열이 아니라 매크로여야 한다.
+#define FW_VERSION "0.1"   // VERSION 파일과 같이 올린다
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
