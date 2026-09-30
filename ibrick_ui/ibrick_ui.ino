@@ -1,5 +1,7 @@
 // ESP32-C6-LCD-1.47 에 2키 스트림덱 UI 를 그리고 물리 키 입력을 처리하는 샘플 스케치
 
+static constexpr char FW_VERSION[] = "0.1";   // VERSION 파일과 같이 올린다
+
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <BLEDevice.h>
@@ -257,6 +259,9 @@ static void drawHeader() {
   lcd.setTextColor(C_LIVE, C_BG);
   lcd.drawString("i-brick deck", PAD, HEADER_H / 2);
   lcd.setFont(&fonts::Font0);
+  lcd.setTextColor(C_DIM, C_BG);
+  lcd.drawString("v" FW_VERSION, PAD + 80, HEADER_H / 2);
+  lcd.setFont(&fonts::Font0);
   lcd.setTextDatum(middle_right);
   lcd.setTextColor(C_DIM, C_BG);
   lcd.drawString(hostOS == HOST_MAC ? "MAC" : "WIN", SCR_W - PAD, HEADER_H / 2);
@@ -508,7 +513,7 @@ void setup() {
   lcd.setBrightness(200);   // 백라이트를 명시적으로 켠다
 
   Serial.println();
-  Serial.println("=== i-brick deck / 2-key sample ===");
+  Serial.printf("=== i-brick deck v%s / 2-key sample ===\n", FW_VERSION);
   Serial.printf("LCD %dx%d  rotation=%d  offset(%d,%d)\n",
                 (int)lcd.width(), (int)lcd.height(), ROTATION, OFFSET_X, OFFSET_Y);
   Serial.printf("KEY1=GPIO%d  KEY2=GPIO%d  (INPUT_PULLUP, GND 에 닿으면 눌림)\n", PIN_KEY1, PIN_KEY2);
