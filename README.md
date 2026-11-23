@@ -115,3 +115,7 @@ make flash
 
 - [`checklist.md`](checklist.md) — 진행 상황
 - [`context-notes.md`](context-notes.md) — 결정과 이유, 막혔던 것들의 재현 과정
+
+## 라이선스
+
+[MIT License](LICENSE) — © 2026 ShineKwon
